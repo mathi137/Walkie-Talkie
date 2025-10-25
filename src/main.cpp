@@ -41,8 +41,15 @@ CC1101 radio = new Module(10, 2, RADIOLIB_NC, 3, spi, spiSettings);
 Radio radio = new RadioModule();
 */
 
-// flag to indicate that a packet was received
+const int switchPin = 4;
+
+volatile int isReceiving = 0;
+volatile int count = 0;
+volatile int isPressed = 0;
+
+// flag to indicate that a packet was received and sent
 volatile bool receivedFlag = false;
+volatile bool transmittedFlag = false;
 
 // this function is called when a complete packet
 // is received by the module
@@ -51,13 +58,20 @@ volatile bool receivedFlag = false;
 #if defined(ESP8266) || defined(ESP32)
   ICACHE_RAM_ATTR
 #endif
-void setFlag(void) {
+void setReceiveFlag(void) {
   // we got a packet, set the flag
   receivedFlag = true;
 }
 
+void setSentFlag(void) {
+  // we sent a packet, set the flag
+  transmittedFlag = true;
+}
+
 void setup() {
   Serial.begin(9600);
+
+  pinMode(switchPin, INPUT_PULLUP);
 
   spi.begin(47, 45, 48, -1);
 
@@ -72,10 +86,10 @@ void setup() {
     while (true) { delay(10); }
   }
 
-  // set the function that will be called
-  // when new packet is received
-  radio.setPacketReceivedAction(setFlag);
-
+  // Set callback for packet reception and transmission
+  radio.setPacketReceivedAction(setReceiveFlag);
+  radio.setPacketSentAction(setSentFlag);
+  
   // start listening for packets
   Serial.print(F("[CC1101] Starting to listen ... "));
   state = radio.startReceive();
@@ -86,7 +100,7 @@ void setup() {
     Serial.println(state);
     while (true) { delay(10); }
   }
-
+  
   // if needed, 'listen' mode can be disabled by calling
   // any of the following methods:
   //
@@ -97,8 +111,7 @@ void setup() {
   // radio.readData();
 }
 
-void loop() {
-  // check if the flag is set
+void handleReceivedPacket() {
   if(receivedFlag) {
     // reset flag
     receivedFlag = false;
@@ -147,5 +160,72 @@ void loop() {
     // put module back to listen mode
     radio.startReceive();
   }
+}
 
+void handleSentPacket() {
+  int transmissionState = RADIOLIB_ERR_NONE;
+
+  // check if the previous transmission finished
+  if(transmittedFlag) {
+    // reset flag
+    transmittedFlag = false;
+
+    if (transmissionState == RADIOLIB_ERR_NONE) {
+      // packet was successfully sent
+      Serial.println(F("transmission finished!"));
+
+      // NOTE: when using interrupt-driven transmit method,
+      //       it is not possible to automatically measure
+      //       transmission data rate using getDataRate()
+
+    } else {
+      Serial.print(F("failed, code "));
+      Serial.println(transmissionState);
+
+    }
+
+    // clean up after transmission is finished
+    // this will ensure transmitter is disabled,
+    // RF switch is powered down etc.
+    radio.finishTransmit();
+
+    // wait a second before transmitting again
+    delay(1000);
+
+    // send another one
+    Serial.print(F("[CC1101] Sending another packet ... "));
+
+    // you can transmit C-string or Arduino string up to
+    // 255 characters long
+    String str = "Hello World! #" + String(count++);
+    transmissionState = radio.startTransmit(str);
+
+    // you can also transmit byte array up to 255 bytes long with limitations https://github.com/jgromes/RadioLib/discussions/1138
+    /*
+      byte byteArr[] = {0x01, 0x23, 0x45, 0x67,
+                        0x89, 0xAB, 0xCD, 0xEF};
+      int state = radio.startTransmit(byteArr, 8);
+    */
+  }
+}
+
+void loop() {
+  if (digitalRead(switchPin) == LOW && isPressed == 0) {
+    isPressed = 1;
+    if (isReceiving) {
+      Serial.println("Switching to Transmit Mode");
+      isReceiving = 0;
+    } else {
+      Serial.println("Switching to Receive Mode");
+      isReceiving = 1;
+    }
+  } else if (digitalRead(switchPin) == HIGH && isPressed == 1) {
+    isPressed = 0;
+  }
+
+  if (isReceiving) {
+    handleReceivedPacket();
+  } else {
+    handleSentPacket();
+  }
 }
